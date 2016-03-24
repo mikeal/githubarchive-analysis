@@ -41,17 +41,32 @@ function mask (data) {
 
 function getRepo (name, cb) {
   db.get(name, (err, info) => {
-    if (!err) return cb(null, info)
+    if (!err && (!info.error || info.error !== 403)) return cb(null, info)
     var u = `${base}/repos/${name}`
     request(u, (err, resp, data) => {
       if (err) return cb(err)
-      if (resp.statusCode === 401) throw new Error('rate limit', u)
+      if ((resp.statusCode === 401 || resp.statusCode === 403) && 
+         resp.headers['x-ratelimit-remaining'] === '0'
+         ) {
+        var reset = (parseInt(resp.headers['x-ratelimit-reset']) * 1000) + (1000 * 60)
+        console.log('rate limit, waiting until', (reset - Date.now()) / 1000 / 60, 'minutes')
+        setTimeout(function () {getRepo(name, cb)}, reset - Date.now())
+        return
+      }
       if (resp.statusCode !== 200) {
         return write(name, {error: resp.statusCode}, cb)
       }
-      u = `https://raw.githubusercontent.com/${name}/${data.default_branch}/package.json`
+      u = `${base}/repos/${name}/contents/package.json?ref=${data.default_branch}`
       request.head(u, function (e, resp) {
-        if (resp.statusCode === 401) throw new Error('rate limit', u)
+        if (e) return cb(e)
+        if ((resp.statusCode === 401 || resp.statusCode === 403) && 
+           resp.headers['x-ratelimit-remaining'] === '0'
+           ) {
+          var reset = (parseInt(resp.headers['x-ratelimit-reset']) * 1000) + (1000 * 60)
+          console.log('rate limit, waiting until', (reset - Date.now()) / 1000 / 60, 'minutes')
+          setTimeout(function () {getRepo(name, cb)}, reset - Date.now())
+          return
+        }
         data.packagejson = resp.statusCode === 200
         if (resp.statusCode !== 404 && resp.statusCode !== 200) console.log('github raw error', resp.statusCode)
         write(name, mask(data), cb)
@@ -73,4 +88,5 @@ _run()
 
 var ProgressBar = require('progress');
 
-var bar = new ProgressBar('pulling :current/:total [:bar] :percent :elapsed/:eta', { total: repos.length });
+var bar = new ProgressBar('pulling :current/:total [:bar] :percent :elapsed', { total: repos.length });
+
